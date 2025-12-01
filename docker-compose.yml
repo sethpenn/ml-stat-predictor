@@ -1,0 +1,293 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with TimescaleDB
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: mlsp-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mlsp}
+      POSTGRES_USER: ${POSTGRES_USER:-mlsp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mlsp_password}
+      POSTGRES_HOST_AUTH_METHOD: ${POSTGRES_HOST_AUTH_METHOD:-scram-sha-256}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-mlsp_user} -d ${POSTGRES_DB:-mlsp}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mlsp-network
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: mlsp-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - mlsp-network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11}
+    container_name: mlsp-backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${POSTGRES_DB:-mlsp}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/0
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - ./backend:/app
+      - backend_cache:/root/.cache
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - mlsp-network
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+      args:
+        NODE_VERSION: ${NODE_VERSION:-20}
+    container_name: mlsp-frontend
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_ENVIRONMENT: ${ENVIRONMENT:-development}
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      - backend
+    command: npm run dev -- --host 0.0.0.0 --port 3000
+    networks:
+      - mlsp-network
+
+  # Airflow Webserver
+  airflow-webserver:
+    build:
+      context: ./data_pipeline
+      dockerfile: Dockerfile.dev
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11}
+    container_name: mlsp-airflow-webserver
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${AIRFLOW_DB:-airflow}
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${AIRFLOW_DB:-airflow}
+      AIRFLOW__CELERY__BROKER_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.com}
+    ports:
+      - "${AIRFLOW_WEBSERVER_PORT:-8080}:8080"
+    volumes:
+      - ./data_pipeline/dags:/opt/airflow/dags
+      - ./data_pipeline/logs:/opt/airflow/logs
+      - ./data_pipeline/plugins:/opt/airflow/plugins
+      - ./data_pipeline/scrapers:/opt/airflow/scrapers
+      - airflow_data:/opt/airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: webserver
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - mlsp-network
+
+  # Airflow Scheduler
+  airflow-scheduler:
+    build:
+      context: ./data_pipeline
+      dockerfile: Dockerfile.dev
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11}
+    container_name: mlsp-airflow-scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${AIRFLOW_DB:-airflow}
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${AIRFLOW_DB:-airflow}
+      AIRFLOW__CELERY__BROKER_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    volumes:
+      - ./data_pipeline/dags:/opt/airflow/dags
+      - ./data_pipeline/logs:/opt/airflow/logs
+      - ./data_pipeline/plugins:/opt/airflow/plugins
+      - ./data_pipeline/scrapers:/opt/airflow/scrapers
+      - airflow_data:/opt/airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--hostname", "$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - mlsp-network
+
+  # Airflow Worker
+  airflow-worker:
+    build:
+      context: ./data_pipeline
+      dockerfile: Dockerfile.dev
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11}
+    container_name: mlsp-airflow-worker
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${AIRFLOW_DB:-airflow}
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${AIRFLOW_DB:-airflow}
+      AIRFLOW__CELERY__BROKER_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    volumes:
+      - ./data_pipeline/dags:/opt/airflow/dags
+      - ./data_pipeline/logs:/opt/airflow/logs
+      - ./data_pipeline/plugins:/opt/airflow/plugins
+      - ./data_pipeline/scrapers:/opt/airflow/scrapers
+      - airflow_data:/opt/airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: celery worker
+    healthcheck:
+      test: ["CMD", "celery", "--app", "airflow.providers.celery.executors.celery_executor.app", "inspect", "ping", "-d", "celery@$$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    networks:
+      - mlsp-network
+
+  # Airflow Initialization
+  airflow-init:
+    build:
+      context: ./data_pipeline
+      dockerfile: Dockerfile.dev
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11}
+    container_name: mlsp-airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${AIRFLOW_DB:-airflow}
+      AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${AIRFLOW_DB:-airflow}
+      AIRFLOW__CELERY__BROKER_URL: redis://:${REDIS_PASSWORD:-redis_password}@redis:6379/1
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:-}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW_ADMIN_USERNAME: ${AIRFLOW_ADMIN_USERNAME:-admin}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+      AIRFLOW_ADMIN_EMAIL: ${AIRFLOW_ADMIN_EMAIL:-admin@example.com}
+    volumes:
+      - airflow_data:/opt/airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db init
+        airflow users create \
+          --username $${AIRFLOW_ADMIN_USERNAME} \
+          --password $${AIRFLOW_ADMIN_PASSWORD} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email $${AIRFLOW_ADMIN_EMAIL}
+    networks:
+      - mlsp-network
+
+  # MLflow
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.9.2
+    container_name: mlsp-mlflow
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${MLFLOW_DB:-mlflow}
+      MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
+    ports:
+      - "${MLFLOW_PORT:-5000}:5000"
+    volumes:
+      - mlflow_data:/mlflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@postgres:5432/${MLFLOW_DB:-mlflow}
+      --default-artifact-root /mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
+    networks:
+      - mlsp-network
+
+networks:
+  mlsp-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  airflow_data:
+    driver: local
+  mlflow_data:
+    driver: local
+  backend_cache:
+    driver: local

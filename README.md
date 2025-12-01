@@ -43,11 +43,55 @@ Detailed design documents are available in `/docs`:
 - [ML Models](docs/architecture/03-ML-MODELS.md) - Machine learning model specifications
 - [Frontend](docs/architecture/04-FRONTEND.md) - React frontend specification
 - [Backend API](docs/architecture/05-BACKEND-API.md) - FastAPI backend specification
+- [Docker Setup](docs/DOCKER.md) - Complete Docker configuration guide
 - [Jira Stories](docs/stories/JIRA-STORIES.md) - Implementation stories
 
 ## Getting Started
 
-*Coming soon* - Setup instructions will be added as the project develops.
+### Prerequisites
+
+- Docker 24.0 or higher
+- Docker Compose 2.20 or higher
+- 16 GB RAM (recommended)
+- 50 GB free disk space (recommended)
+
+### Quick Start
+
+1. **Clone the repository**
+   ```bash
+   git clone <repository-url>
+   cd ml-stat-predictor
+   ```
+
+2. **Set up environment**
+   ```bash
+   make setup
+   ```
+   This will create a `.env` file and generate necessary keys.
+
+3. **Start all services**
+   ```bash
+   make up
+   ```
+
+4. **Access the applications**
+   - Frontend: http://localhost:3000
+   - Backend API: http://localhost:8000/docs
+   - Airflow: http://localhost:8080 (admin/admin)
+   - MLflow: http://localhost:5000
+
+### Common Commands
+
+```bash
+make up              # Start all services
+make down            # Stop all services
+make logs            # View logs
+make test            # Run tests
+make db-shell        # Access database
+make clean           # Clean up Docker resources
+```
+
+For detailed Docker documentation, see [docs/DOCKER.md](docs/DOCKER.md).
 
 ## License
 
