@@ -1,0 +1,35 @@
+ARG PYTHON_VERSION=3.11
+FROM apache/airflow:2.8.0-python${PYTHON_VERSION}
+
+# Switch to root to install system dependencies
+USER root
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    libpq-dev \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Switch back to airflow user
+USER airflow
+
+# Set working directory
+WORKDIR /opt/airflow
+
+# Copy requirements file
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy DAGs, plugins, and scraper code (in dev, overridden by volume mounts)
+COPY dags/ /opt/airflow/dags/
+COPY plugins/ /opt/airflow/plugins/
+COPY scrapers/ /opt/airflow/scrapers/
+
+# Default command (overridden in docker-compose.yml for different services)
+CMD ["airflow", "webserver"]

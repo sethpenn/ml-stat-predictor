@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # Backend API - Production
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+      args:
+        PYTHON_VERSION: ${PYTHON_VERSION:-3.11}
+    command: gunicorn app.main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+    volumes:
+      - backend_static:/app/static
+    restart: unless-stopped
+
+  # Frontend - Production
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+      args:
+        NODE_VERSION: ${NODE_VERSION:-20}
+        VITE_API_URL: ${VITE_API_URL}
+    volumes:
+      - frontend_build:/app/dist
+    restart: unless-stopped
+
+  # Airflow Webserver - Production
+  airflow-webserver:
+    build:
+      context: ./data_pipeline
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+
+  # Airflow Scheduler - Production
+  airflow-scheduler:
+    build:
+      context: ./data_pipeline
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+
+  # Airflow Worker - Production
+  airflow-worker:
+    build:
+      context: ./data_pipeline
+      dockerfile: Dockerfile.prod
+    restart: unless-stopped
+
+  # Airflow Init - Production
+  airflow-init:
+    build:
+      context: ./data_pipeline
+      dockerfile: Dockerfile.prod
+
+  # PostgreSQL - Production
+  postgres:
+    restart: unless-stopped
+    command: postgres -c shared_preload_libraries=timescaledb -c max_connections=200
+
+  # Redis - Production
+  redis:
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD} --maxmemory 2gb --maxmemory-policy allkeys-lru
+
+  # MLflow - Production
+  mlflow:
+    restart: unless-stopped
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: mlsp-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - frontend_build:/usr/share/nginx/html:ro
+      - backend_static:/usr/share/nginx/static:ro
+    depends_on:
+      - frontend
+      - backend
+    restart: unless-stopped
+    networks:
+      - mlsp-network
+
+volumes:
+  backend_static:
+    driver: local
+  frontend_build:
+    driver: local
