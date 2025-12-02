@@ -11,14 +11,14 @@ RUN apk add --no-cache python3 make g++
 COPY package*.json ./
 
 # Install dependencies
-RUN npm ci
+RUN npm install
 
 # Copy application code (in dev, this is overridden by volume mount)
 COPY . .
 
 # Create non-root user
-RUN addgroup -g 1000 appuser && \
-    adduser -D -u 1000 -G appuser appuser && \
+RUN addgroup -S appuser || true && \
+    adduser -S -G appuser appuser || true && \
     chown -R appuser:appuser /app
 
 USER appuser
