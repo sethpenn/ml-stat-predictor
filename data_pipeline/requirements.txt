@@ -1,35 +1,34 @@
-# Airflow Providers
-apache-airflow-providers-postgres==5.10.0
-apache-airflow-providers-redis==3.5.0
-apache-airflow-providers-celery==3.5.0
+# Airflow Providers (use versions compatible with Airflow 2.8.0)
+apache-airflow-providers-postgres
+apache-airflow-providers-redis
+apache-airflow-providers-celery
 
-# Web Scraping
-scrapy==2.11.0
-playwright==1.40.0
-beautifulsoup4==4.12.3
-lxml==5.1.0
-selenium==4.16.0
+# Web Scraping (simplified - avoid complex dependency trees)
+beautifulsoup4
+lxml
+requests
+
+# Scrapy and Playwright can be added later if needed
+# They have complex dependencies that may conflict with Airflow
+# scrapy==2.11.0
+# playwright==1.40.0
+# selenium==4.16.0
 
 # Data Processing
-pandas==2.1.4
-numpy==1.26.3
+pandas
+numpy
 
-# Database
-sqlalchemy==2.0.25
-psycopg2-binary==2.9.9
+# Database (psycopg2-binary already included in Airflow base image)
+# sqlalchemy already included in Airflow base image
 
 # HTTP Clients
-requests==2.31.0
-httpx==0.26.0
+httpx
 
 # Utilities
-python-dotenv==1.0.0
-tenacity==8.2.3
-pydantic==2.5.3
-
-# Data Validation
-great-expectations==0.18.8
+python-dotenv
+tenacity
+# pydantic already included in Airflow base image
 
 # Development
-pytest==7.4.4
-pytest-asyncio==0.23.3
+pytest
+pytest-asyncio

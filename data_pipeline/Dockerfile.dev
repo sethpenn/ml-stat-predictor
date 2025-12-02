@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     curl \
     git \
+    procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Switch back to airflow user
@@ -22,9 +23,11 @@ WORKDIR /opt/airflow
 # Copy requirements file
 COPY requirements.txt .
 
-# Install Python dependencies
+# Install Python dependencies with Airflow constraints
+# This ensures all packages are compatible with Airflow 2.8.0
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt \
+    --constraint "https://raw.githubusercontent.com/apache/airflow/constraints-2.8.0/constraints-3.11.txt"
 
 # Copy DAGs, plugins, and scraper code (in dev, overridden by volume mounts)
 COPY dags/ /opt/airflow/dags/
