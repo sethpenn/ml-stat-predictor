@@ -72,6 +72,44 @@ services:
         reservations:
           memory: 256mb
 
+  # MinIO - S3-compatible object storage for MLflow artifacts
+  minio:
+    image: minio/minio:latest
+    container_name: mlsp-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minio_admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minio_password}
+    ports:
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    networks:
+      - mlsp-network
+
+  # MinIO Client - Initialize buckets
+  minio-init:
+    image: minio/mc:latest
+    container_name: mlsp-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER:-minio_admin} ${MINIO_ROOT_PASSWORD:-minio_password};
+      mc mb myminio/mlflow --ignore-existing;
+      mc policy set download myminio/mlflow;
+      exit 0;
+      "
+    networks:
+      - mlsp-network
+
   # Backend API
   backend:
     build:
@@ -86,7 +124,14 @@ services:
       SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # MLflow Configuration
       MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_TRACKING_USERNAME: ${MLFLOW_TRACKING_USERNAME:-admin}
+      MLFLOW_TRACKING_PASSWORD: ${MLFLOW_TRACKING_PASSWORD:-admin_password}
+      # MinIO (S3) Configuration for MLflow artifacts
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio_admin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minio_password}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
     ports:
       - "${BACKEND_PORT:-8000}:8000"
     volumes:
@@ -314,23 +359,44 @@ services:
       dockerfile: Dockerfile
     container_name: mlsp-mlflow
     environment:
+      # PostgreSQL backend for experiment tracking
       MLFLOW_BACKEND_STORE_URI: postgresql://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@pgbouncer:6432/${MLFLOW_DB:-mlflow}
-      MLFLOW_ARTIFACT_ROOT: /mlflow/artifacts
+      # MinIO (S3) configuration for artifact storage
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-minio_admin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-minio_password}
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      # Authentication
+      MLFLOW_AUTH_CONFIG_PATH: /mlflow/auth/basic_auth.ini
+      # Admin credentials for initial setup
+      MLFLOW_ADMIN_USERNAME: ${MLFLOW_ADMIN_USERNAME:-admin}
+      MLFLOW_ADMIN_PASSWORD: ${MLFLOW_ADMIN_PASSWORD:-admin_password}
     ports:
       - "${MLFLOW_PORT:-5000}:5000"
     volumes:
       - mlflow_data:/mlflow
+      - ./mlflow/auth:/mlflow/auth
     depends_on:
       postgres:
         condition: service_healthy
       pgbouncer:
         condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     command: >
       mlflow server
       --backend-store-uri postgresql://${POSTGRES_USER:-mlsp_user}:${POSTGRES_PASSWORD:-mlsp_password}@pgbouncer:6432/${MLFLOW_DB:-mlflow}
-      --default-artifact-root /mlflow/artifacts
+      --default-artifact-root s3://mlflow/
       --host 0.0.0.0
       --port 5000
+      --app-name basic-auth
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     networks:
       - mlsp-network
 
@@ -342,6 +408,8 @@ volumes:
   postgres_data:
     driver: local
   redis_data:
+    driver: local
+  minio_data:
     driver: local
   airflow_data:
     driver: local

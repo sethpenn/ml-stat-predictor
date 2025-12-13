@@ -7,8 +7,17 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install psycopg2-binary for PostgreSQL support
-RUN pip install --no-cache-dir psycopg2-binary
+# Install required Python packages
+# - psycopg2-binary: PostgreSQL support for tracking backend
+# - boto3: AWS SDK for S3-compatible storage (MinIO)
+# - cryptography: Required for MLflow authentication
+RUN pip install --no-cache-dir \
+    psycopg2-binary==2.9.9 \
+    boto3==1.34.16 \
+    cryptography==41.0.7
 
-# Default command
+# Create directory for MLflow artifacts (fallback)
+RUN mkdir -p /mlflow/artifacts
+
+# Default command (overridden in docker-compose)
 CMD ["mlflow", "server", "--host", "0.0.0.0", "--port", "5000"]
