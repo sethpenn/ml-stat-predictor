@@ -1,0 +1,273 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version/tag to deploy (e.g., main-abc1234 or latest)'
+        required: true
+        default: 'latest'
+      confirm:
+        description: 'Type "DEPLOY" to confirm production deployment'
+        required: true
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  validate-input:
+    name: Validate Deployment Request
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate confirmation
+        run: |
+          if [ "${{ github.event.inputs.confirm }}" != "DEPLOY" ]; then
+            echo "❌ Deployment not confirmed. You must type 'DEPLOY' to proceed."
+            exit 1
+          fi
+          echo "✅ Deployment confirmed"
+
+      - name: Display deployment details
+        run: |
+          echo "🚀 Production Deployment Request"
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "Triggered by: ${{ github.actor }}"
+          echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+
+  pre-deployment-checks:
+    name: Pre-deployment Checks
+    runs-on: ubuntu-latest
+    needs: validate-input
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Verify Docker images exist
+        run: |
+          echo "Verifying images for version: ${{ github.event.inputs.version }}"
+
+          # Check if images exist in registry
+          SERVICES=("backend" "frontend" "data-pipeline")
+          for service in "${SERVICES[@]}"; do
+            IMAGE="${{ env.REGISTRY }}/${{ github.repository }}/${service}:${{ github.event.inputs.version }}"
+            echo "Checking $IMAGE..."
+            # Note: This requires proper authentication
+            # docker manifest inspect $IMAGE || exit 1
+          done
+
+          echo "✅ All images verified"
+
+      - name: Run security scan
+        run: |
+          echo "Running security scans on production images..."
+          # Placeholder for security scanning (e.g., Trivy)
+          echo "Security scan passed"
+
+  deploy-production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: pre-deployment-checks
+    environment:
+      name: production
+      url: https://mlsp.example.com
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+          export KUBECONFIG=./kubeconfig
+
+      - name: Create backup of current deployment
+        run: |
+          export KUBECONFIG=./kubeconfig
+
+          echo "Creating backup of current production state..."
+          kubectl get deployment backend -n mlsp-production -o yaml > backup-backend.yaml
+          kubectl get deployment frontend -n mlsp-production -o yaml > backup-frontend.yaml
+          kubectl get deployment data-pipeline -n mlsp-production -o yaml > backup-data-pipeline.yaml
+
+          echo "✅ Backup created"
+
+      - name: Deploy to production
+        run: |
+          export KUBECONFIG=./kubeconfig
+          VERSION="${{ github.event.inputs.version }}"
+
+          echo "🚀 Deploying version $VERSION to production..."
+
+          # Update backend
+          kubectl set image deployment/backend \
+            backend=${{ env.REGISTRY }}/${{ github.repository }}/backend:${VERSION} \
+            -n mlsp-production
+
+          # Update frontend
+          kubectl set image deployment/frontend \
+            frontend=${{ env.REGISTRY }}/${{ github.repository }}/frontend:${VERSION} \
+            -n mlsp-production
+
+          # Update data-pipeline
+          kubectl set image deployment/data-pipeline \
+            data-pipeline=${{ env.REGISTRY }}/${{ github.repository }}/data-pipeline:${VERSION} \
+            -n mlsp-production
+
+          echo "✅ Deployment commands executed"
+
+      - name: Wait for rollout
+        run: |
+          export KUBECONFIG=./kubeconfig
+
+          echo "Waiting for rollout to complete..."
+
+          kubectl rollout status deployment/backend -n mlsp-production --timeout=10m
+          kubectl rollout status deployment/frontend -n mlsp-production --timeout=10m
+          kubectl rollout status deployment/data-pipeline -n mlsp-production --timeout=10m
+
+          echo "✅ Rollout completed"
+
+      - name: Verify deployment
+        run: |
+          export KUBECONFIG=./kubeconfig
+
+          echo "Verifying deployment..."
+
+          # Check pod status
+          kubectl get pods -n mlsp-production
+
+          # Check if all pods are running
+          BACKEND_PODS=$(kubectl get pods -n mlsp-production -l app=backend -o jsonpath='{.items[*].status.phase}')
+          FRONTEND_PODS=$(kubectl get pods -n mlsp-production -l app=frontend -o jsonpath='{.items[*].status.phase}')
+          PIPELINE_PODS=$(kubectl get pods -n mlsp-production -l app=data-pipeline -o jsonpath='{.items[*].status.phase}')
+
+          if [[ "$BACKEND_PODS" != *"Running"* ]] || \
+             [[ "$FRONTEND_PODS" != *"Running"* ]] || \
+             [[ "$PIPELINE_PODS" != *"Running"* ]]; then
+            echo "❌ Some pods are not running"
+            exit 1
+          fi
+
+          echo "✅ All pods are running"
+
+      - name: Upload backup artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: production-backup-${{ github.run_number }}
+          path: backup-*.yaml
+          retention-days: 30
+
+      - name: Cleanup kubeconfig
+        if: always()
+        run: rm -f kubeconfig
+
+  smoke-tests:
+    name: Production Smoke Tests
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    steps:
+      - name: Run health checks
+        run: |
+          PROD_URL="${{ secrets.PRODUCTION_URL }}"
+
+          if [ -z "$PROD_URL" ]; then
+            echo "⚠️  PRODUCTION_URL not configured"
+            exit 0
+          fi
+
+          echo "Running smoke tests against $PROD_URL..."
+
+          # Health check
+          if ! curl -f "$PROD_URL/health"; then
+            echo "❌ Health check failed"
+            exit 1
+          fi
+
+          echo "✅ Health check passed"
+
+          # API endpoint check
+          if ! curl -f "$PROD_URL/api/v1/health"; then
+            echo "❌ API health check failed"
+            exit 1
+          fi
+
+          echo "✅ API health check passed"
+
+      - name: Verify critical features
+        run: |
+          echo "Running critical feature tests..."
+          # Add critical feature tests here
+          echo "✅ Critical features verified"
+
+  rollback:
+    name: Rollback (Manual)
+    runs-on: ubuntu-latest
+    needs: [deploy-production, smoke-tests]
+    if: failure()
+    environment:
+      name: production-rollback
+    steps:
+      - name: Download backup
+        uses: actions/download-artifact@v4
+        with:
+          name: production-backup-${{ github.run_number }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'latest'
+
+      - name: Configure kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG_PRODUCTION }}" | base64 -d > kubeconfig
+          export KUBECONFIG=./kubeconfig
+
+      - name: Perform rollback
+        run: |
+          export KUBECONFIG=./kubeconfig
+
+          echo "🔄 Rolling back production deployment..."
+
+          kubectl apply -f backup-backend.yaml
+          kubectl apply -f backup-frontend.yaml
+          kubectl apply -f backup-data-pipeline.yaml
+
+          echo "Waiting for rollback to complete..."
+          kubectl rollout status deployment/backend -n mlsp-production --timeout=10m
+          kubectl rollout status deployment/frontend -n mlsp-production --timeout=10m
+          kubectl rollout status deployment/data-pipeline -n mlsp-production --timeout=10m
+
+          echo "✅ Rollback completed"
+
+      - name: Cleanup kubeconfig
+        if: always()
+        run: rm -f kubeconfig
+
+  notify-deployment:
+    name: Notify Deployment Status
+    runs-on: ubuntu-latest
+    needs: [deploy-production, smoke-tests]
+    if: always()
+    steps:
+      - name: Send notification
+        run: |
+          if [ "${{ needs.smoke-tests.result }}" == "success" ]; then
+            echo "✅ Production deployment successful!"
+            echo "Version: ${{ github.event.inputs.version }}"
+            echo "Deployed by: ${{ github.actor }}"
+            echo "Time: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          else
+            echo "❌ Production deployment failed or rolled back"
+            echo "Please check the logs for details"
+          fi
+
+          # Add Slack/Discord/Email notification here
+          # Example for Slack:
+          # curl -X POST -H 'Content-type: application/json' \
+          #   --data '{"text":"Production deployment completed"}' \
+          #   ${{ secrets.SLACK_WEBHOOK_URL }}

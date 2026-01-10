@@ -1,0 +1,110 @@
+version: 2
+updates:
+  # GitHub Actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "github-actions"
+    reviewers:
+      - "sethpenn"
+    commit-message:
+      prefix: "ci"
+
+  # Frontend dependencies
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "frontend"
+    reviewers:
+      - "sethpenn"
+    commit-message:
+      prefix: "deps"
+    groups:
+      react:
+        patterns:
+          - "react*"
+          - "@types/react*"
+      build-tools:
+        patterns:
+          - "vite*"
+          - "@vitejs/*"
+          - "typescript"
+
+  # Backend dependencies
+  - package-ecosystem: "pip"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "backend"
+    reviewers:
+      - "sethpenn"
+    commit-message:
+      prefix: "deps"
+    groups:
+      fastapi:
+        patterns:
+          - "fastapi"
+          - "uvicorn*"
+          - "pydantic*"
+      database:
+        patterns:
+          - "sqlalchemy"
+          - "alembic"
+          - "asyncpg"
+          - "psycopg2*"
+      testing:
+        patterns:
+          - "pytest*"
+
+  # Data pipeline dependencies
+  - package-ecosystem: "pip"
+    directory: "/data_pipeline"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "data-pipeline"
+    reviewers:
+      - "sethpenn"
+    commit-message:
+      prefix: "deps"
+
+  # Docker
+  - package-ecosystem: "docker"
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  - package-ecosystem: "docker"
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "docker"
+
+  - package-ecosystem: "docker"
+    directory: "/data_pipeline"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "docker"
